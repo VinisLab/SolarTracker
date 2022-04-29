@@ -1,0 +1,241 @@
+esphome:
+  name: solar-tracker-v02
+  includes:
+    - customGyro.h
+    - customTracker.h
+  on_boot:
+    then:
+      # read the RTC time once when the system boots
+      ds1307.read_time:
+  on_loop:
+    then:
+    - if:
+        condition:
+          wifi.connected:
+        then:
+          - lambda: |-
+              id(connected) = true;
+
+
+globals:
+  - id: connected
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: currentPosition
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: sunPosition
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: placaFinal # Angulo usado se sunPosition > 61.5 && < -61.5
+    type: float
+    restore_value: no
+    initial_value: '0'
+
+number:
+  - platform: template
+    name: "Estado Tracker"
+    id: estadoTracker
+    optimistic: true
+    min_value: 0
+    max_value: 10
+    step: 1 
+  
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+  level: INFO
+
+# Enable Home Assistant API
+api:
+
+ota:
+  password: "298ddfda81efca3e1e0240aa3da7b74"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  
+  # use_address: esphome-web-e03eac.local
+
+  manual_ip:
+    static_ip: 192.168.0.194
+    gateway: 192.168.0.1
+    subnet: 255.255.255.0
+    dns1: 192.168.0.2
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "solar-tracker-v02-ap"
+    password: "9AptrEhmn30x"
+
+captive_portal:
+
+time:
+  - platform: ds1307
+    # repeated synchronization is not necessary unless the external RTC
+    # is much more accurate than the internal clock
+    update_interval: 1h
+  - platform: homeassistant
+    # instead try to synchronize via network repeatedly ...
+    on_time_sync:
+      then:
+        # ... and update the RTC when the synchronization was successful
+        ds1307.write_time:
+
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  frequency: 400kHz
+  scan: true
+  id: bus_a
+
+# Example configuration entry
+sun:
+  latitude: -22.663630°
+  longitude: -47.789868°
+  id: sol
+
+  on_sunrise:
+    - then:
+        - logger.log: Good morning!
+    # Custom elevation, will be called shortly after the trigger above.
+    - elevation: 5°
+      then:
+        - logger.log: Good morning 2!
+
+  on_sunset:
+    - then:
+        - logger.log: Good evening!
+
+sensor:
+  - platform: sun
+    name: Sun Elevation
+    type: elevation
+    id: sun_elevation
+  - platform: sun
+    name: Sun Azimuth
+    type: azimuth
+    id: sun_azimuth
+    
+  - platform: custom
+    lambda: |-
+      auto tracker = new SolarTracker();
+      App.register_component(tracker);
+      return {};
+    sensors:
+      
+  - platform: custom
+    lambda: |-
+      auto mlx = new MPU6050();
+      App.register_component(mlx);
+      return {mlx->SunPos, mlx->Accx, mlx->Accy, mlx->Accz, mlx->AngleX, mlx->AngleY, mlx->temperature, mlx->PlacaFinal};
+
+    sensors:
+      - name: "Sun Pos"
+        id: sun_pos
+        unit_of_measurement: "°"
+        accuracy_decimals: 3
+        
+      - name: "Accel X"
+        unit_of_measurement: "G"
+        accuracy_decimals: 2
+
+      - name: "Accel Y"
+        unit_of_measurement: "G"
+        accuracy_decimals: 2
+
+      - name: "Accel Z"
+        unit_of_measurement: "G"
+        accuracy_decimals: 2
+
+      - name: "Angle X"
+        id: angle_x
+        unit_of_measurement: "°"
+        accuracy_decimals: 2
+        filters:
+        - median:
+            window_size: 3
+            send_every: 1
+            send_first_at: 1
+
+      - name: "Angle Y"
+        unit_of_measurement: "°"
+        accuracy_decimals: 2
+
+      - name: "Temperatura MPU6050"
+        unit_of_measurement: "°C"
+        accuracy_decimals: 2
+
+      - name: "Placa Final"
+        id: PlacaFinal
+        unit_of_measurement: "°"
+        accuracy_decimals: 2
+
+  - platform: dht
+    model: DHT22
+    pin: 27
+    temperature:
+      name: "Temperatura no Telhado DHT22"
+    humidity:
+      name: "Umidade no Telhado DHT22"
+    update_interval: 3min
+
+  - platform: pulse_counter
+    pin: 14
+    unit_of_measurement: "km/h"
+    name: "Velocidade do vento"
+    id: wind
+    update_interval: 30s
+    filters:
+      - multiply: 0.09413069 # (1/60 * 0,25761 * 3,6 pulses por km/h)
+
+switch:
+  - platform: gpio
+    pin: 16
+    name: "Ligar motor"
+    inverted: true
+    id: ligar_motor
+
+  - platform: gpio
+    pin: 25
+    name: "Sentido do motor"
+    inverted: true
+    id: sentido_motor
+
+  - platform: restart
+    name: "Tracker Restart"
+    icon: "mdi:restart"
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: 34
+      inverted: true
+      mode:
+        input: true
+    name: "Fim de curso reverso"
+    id: fcReverse
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+      
+  - platform: gpio
+    pin:
+      number: 35
+      inverted: true
+      mode:
+        input: true
+    name: "Fim de curso pra frente"
+    id: fcForward
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
